@@ -1,0 +1,10 @@
+// Shared-memory tiled matrix multiplication.
+#include <cuda_runtime.h>
+#include <iostream>
+#include <vector>
+#include <iomanip>
+#include <cstdlib>
+using namespace std;
+#define CK(x) do{cudaError_t e=(x);if(e!=cudaSuccess){cerr<<cudaGetErrorString(e)<<" at line "<<__LINE__<<"\n";return 1;}}while(0)
+template<int T> __global__ void tiled(const float*A,const float*B,float*C,int N){__shared__ float As[T][T],Bs[T][T];int r=blockIdx.y*T+threadIdx.y,c=blockIdx.x*T+threadIdx.x;float sum=0;for(int p=0;p<(N+T-1)/T;p++){int ac=p*T+threadIdx.x,br=p*T+threadIdx.y;As[threadIdx.y][threadIdx.x]=(r<N&&ac<N)?A[r*N+ac]:0;Bs[threadIdx.y][threadIdx.x]=(br<N&&c<N)?B[br*N+c]:0;__syncthreads();for(int k=0;k<T;k++)sum+=As[threadIdx.y][k]*Bs[k][threadIdx.x];__syncthreads();}if(r<N&&c<N)C[r*N+c]=sum;}
+int main(int argc,char**argv){int N=argc>1?atoi(argv[1]):256,T=argc>2?atoi(argv[2]):16;if(N<=0||(T!=8&&T!=16&&T!=32))return 1;int d=0;CK(cudaGetDeviceCount(&d));if(!d){cerr<<"No CUDA GPU found\n";return 2;}vector<float>A((size_t)N*N),B((size_t)N*N),C((size_t)N*N);for(int i=0;i<N*N;i++){A[i]=(i%17)*.1f;B[i]=(i%13)*.2f;}float *a,*b,*c;CK(cudaMalloc(&a,A.size()*4));CK(cudaMalloc(&b,B.size()*4));CK(cudaMalloc(&c,C.size()*4));CK(cudaMemcpy(a,A.data(),A.size()*4,cudaMemcpyHostToDevice));CK(cudaMemcpy(b,B.data(),B.size()*4,cudaMemcpyHostToDevice));cudaEvent_t s,e;cudaEventCreate(&s);cudaEventCreate(&e);cudaEventRecord(s);if(T==8)tiled<8><<<dim3((N+7)/8,(N+7)/8),dim3(8,8)>>>(a,b,c,N);else if(T==16)tiled<16><<<dim3((N+15)/16,(N+15)/16),dim3(16,16)>>>(a,b,c,N);else tiled<32><<<dim3((N+31)/32,(N+31)/32),dim3(32,32)>>>(a,b,c,N);CK(cudaGetLastError());cudaEventRecord(e);cudaEventSynchronize(e);float ms;cudaEventElapsedTime(&ms,s,e);CK(cudaMemcpy(C.data(),c,C.size()*4,cudaMemcpyDeviceToHost));double sum=0;for(float x:C)sum+=x;cout<<fixed<<setprecision(4)<<"N="<<N<<", tile="<<T<<", tiled CUDA kernel ms="<<ms<<", checksum="<<sum<<"\n";cudaFree(a);cudaFree(b);cudaFree(c);cudaEventDestroy(s);cudaEventDestroy(e);}
